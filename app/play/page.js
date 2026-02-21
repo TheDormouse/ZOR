@@ -1,22 +1,23 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, useRef, useCallback, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
-import { ZONES, ZONE_KEYS, generateWordSequence } from "@/lib/zones";
+import { ZONES, ZONE_KEYS } from "@/lib/zones";
+import { generateWordSequence, DEFAULT_WORD_PACK, PRESET_WORD_PACKS } from "@/lib/word-packs";
+import { mergeTheme, BUBBLE_SHAPES, BUBBLE_FONT_STYLES } from "@/lib/themes";
+import { MUSIC_PRESETS } from "@/lib/themes/presets";
 import { hasPlayedToday, saveSession } from "@/lib/storage";
 import { supabase } from "@/lib/supabase";
 
-const GAME_DURATION = 300; // 5 minutes in seconds
-const WORD_INTERVAL = 1000; // 1 word per second
-const BUBBLE_LIFETIME = 8000; // 8 seconds to fall
-const INACTIVITY_TIMEOUT = 60_000; // 60 seconds of no interaction → cancel
+const GAME_DURATION = 300;
+const WORD_INTERVAL = 1000;
+const BUBBLE_LIFETIME = 8000;
+const INACTIVITY_TIMEOUT = 60_000;
 
-const SUPABASE_URL = "https://uwuszitxbahafyjjsssl.supabase.co";
-const SUPABASE_ANON_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV3dXN6aXR4YmFoYWZ5ampzc3NsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAwNjkyNTQsImV4cCI6MjA4NTY0NTI1NH0.OBENH_0cC7MJOqwd5X0MkXQr21ZDiJOGvP0qrQGsAtw";
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-// Fire-and-forget sync via REST + keepalive (survives page unload)
 function beaconUpdate(id, body) {
   if (!id) return;
   fetch(`${SUPABASE_URL}/rest/v1/sessions?id=eq.${id}`, {
@@ -33,13 +34,35 @@ function beaconUpdate(id, body) {
 }
 
 export default function PlayPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+      </div>
+    }>
+      <PlayGame />
+    </Suspense>
+  );
+}
+
+function PlayGame() {
   const router = useRouter();
-  const [gameState, setGameState] = useState("ready"); // ready | playing | finished
+  const searchParams = useSearchParams();
+  const classroomCode = searchParams.get("tag");
+  const classroomCodeRef = useRef(classroomCode);
+
+  const [gameState, setGameState] = useState("ready");
   const [timeLeft, setTimeLeft] = useState(GAME_DURATION);
   const [activeBubbles, setActiveBubbles] = useState([]);
   const [collected, setCollected] = useState([]);
   const [zoneCounts, setZoneCounts] = useState({ blue: 0, green: 0, yellow: 0, red: 0 });
   const [sessionId, setSessionId] = useState(null);
+  const [classroomId, setClassroomId] = useState(null);
+
+  // Theme & word pack state
+  const [activeTheme, setActiveTheme] = useState(() => mergeTheme());
+  const [wordPack, setWordPack] = useState(DEFAULT_WORD_PACK);
+  const [settingsLoaded, setSettingsLoaded] = useState(!classroomCode);
 
   const wordSequence = useRef([]);
   const wordIndex = useRef(0);
@@ -51,39 +74,87 @@ export default function PlayPage() {
   const gameStateRef = useRef("ready");
   const inactivityTimer = useRef(null);
   const hiddenSinceRef = useRef(null);
+  const audioRef = useRef(null);
 
-  // Keep refs in sync so event handlers always see current values
   useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
   useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
 
-  // Redirect if already played
+  // Redirect if already played (anonymous flow only)
   useEffect(() => {
-    if (typeof window !== "undefined" && hasPlayedToday()) {
+    if (!classroomCode && typeof window !== "undefined" && hasPlayedToday()) {
       router.replace("/");
     }
-  }, [router]);
+  }, [router, classroomCode]);
 
-  // Create Supabase session on mount
+  // Load classroom settings + create session
   useEffect(() => {
-    async function createSession() {
-      const { data, error } = await supabase
+    async function init() {
+      let resolvedClassroomId = null;
+
+      if (classroomCodeRef.current) {
+        const { data: classroomData } = await supabase
+          .from("classrooms")
+          .select("id, theme, word_pack_id")
+          .eq("code", classroomCodeRef.current)
+          .single();
+
+        if (classroomData) {
+          resolvedClassroomId = classroomData.id;
+          setClassroomId(resolvedClassroomId);
+
+          // Apply theme
+          if (classroomData.theme && Object.keys(classroomData.theme).length > 0) {
+            setActiveTheme(mergeTheme(classroomData.theme));
+          }
+
+          // Load word pack: custom DB pack takes priority, then preset, then default
+          if (classroomData.word_pack_id) {
+            const { data: packData } = await supabase
+              .from("word_packs")
+              .select("*")
+              .eq("id", classroomData.word_pack_id)
+              .single();
+            if (packData) {
+              setWordPack({ ...packData, zones: packData.words });
+            }
+          } else if (classroomData.theme?.wordPackPreset) {
+            const preset = PRESET_WORD_PACKS.find(
+              (p) => p.id === classroomData.theme.wordPackPreset
+            );
+            if (preset) setWordPack(preset);
+          }
+        }
+        setSettingsLoaded(true);
+      }
+
+      const insertPayload = { status: "in_progress", selected_words: [], zone_counts: {} };
+      if (resolvedClassroomId) insertPayload.classroom_id = resolvedClassroomId;
+
+      const { data } = await supabase
         .from("sessions")
-        .insert({ status: "in_progress", selected_words: [], zone_counts: {} })
+        .insert(insertPayload)
         .select("id")
         .single();
       if (data) {
         setSessionId(data.id);
       }
     }
-    createSession();
+    init();
   }, []);
 
-  // Generate word sequence
+  // Generate word sequence once settings are loaded
   useEffect(() => {
-    wordSequence.current = generateWordSequence();
-  }, []);
+    if (!settingsLoaded) return;
+    wordSequence.current = generateWordSequence(wordPack);
+  }, [settingsLoaded, wordPack]);
 
-  // ── Cancellation: beforeunload (tab close / navigate away) ──
+  // Compute game duration based on word pack size
+  const totalWords = wordPack.zones
+    ? ZONE_KEYS.reduce((sum, z) => sum + (wordPack.zones[z]?.words?.length || 0), 0)
+    : 300;
+  const gameDuration = Math.max(totalWords, GAME_DURATION);
+
+  // Cancellation: beforeunload
   useEffect(() => {
     function handleBeforeUnload() {
       if (gameStateRef.current === "finished") return;
@@ -97,26 +168,23 @@ export default function PlayPage() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, []);
 
-  // ── Cancellation: visibilitychange (tab hidden for too long) ──
+  // Cancellation: visibilitychange
   useEffect(() => {
     function handleVisibility() {
       if (gameStateRef.current === "finished") return;
-
       if (document.hidden) {
         hiddenSinceRef.current = Date.now();
       } else if (hiddenSinceRef.current) {
         const away = Date.now() - hiddenSinceRef.current;
         hiddenSinceRef.current = null;
-        if (away > INACTIVITY_TIMEOUT) {
-          cancelAndRedirect();
-        }
+        if (away > INACTIVITY_TIMEOUT) cancelAndRedirect();
       }
     }
     document.addEventListener("visibilitychange", handleVisibility);
     return () => document.removeEventListener("visibilitychange", handleVisibility);
   }, []);
 
-  // ── Cancellation: inactivity (no clicks/taps for 60 s while playing) ──
+  // Cancellation: inactivity
   const resetInactivityTimer = useCallback(() => {
     clearTimeout(inactivityTimer.current);
     if (gameStateRef.current !== "playing") return;
@@ -136,13 +204,21 @@ export default function PlayPage() {
     }
   }, [gameState, resetInactivityTimer]);
 
-  // Shared cancel helper
+  const stopMusic = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+      audioRef.current = null;
+    }
+  }, []);
+
   const cancelAndRedirect = useCallback(async () => {
     if (gameStateRef.current === "finished") return;
     setGameState("finished");
     clearInterval(timerRef.current);
     clearInterval(spawnerRef.current);
     clearTimeout(syncTimer.current);
+    stopMusic();
     if (sessionIdRef.current) {
       await supabase
         .from("sessions")
@@ -153,10 +229,10 @@ export default function PlayPage() {
         })
         .eq("id", sessionIdRef.current);
     }
-    router.replace("/");
-  }, [router]);
+    router.replace(classroomCodeRef.current ? `/t/${classroomCodeRef.current}` : "/");
+  }, [router, stopMusic]);
 
-  // ── Cancellation: unmount without finishing ──
+  // Cancellation: unmount without finishing
   useEffect(() => {
     return () => {
       if (gameStateRef.current !== "finished") {
@@ -169,11 +245,32 @@ export default function PlayPage() {
     };
   }, []);
 
+  function startMusic() {
+    const music = activeTheme.music;
+    if (!music) return;
+
+    let src = null;
+    if (music.url) {
+      src = music.url;
+    } else if (music.preset) {
+      const preset = MUSIC_PRESETS.find((p) => p.id === music.preset);
+      if (preset?.file) src = preset.file;
+    }
+
+    if (src) {
+      const audio = new Audio(src);
+      audio.loop = true;
+      audio.volume = 0.15;
+      audio.play().catch(() => {});
+      audioRef.current = audio;
+    }
+  }
+
   const startGame = useCallback(() => {
     setGameState("playing");
     wordIndex.current = 0;
+    startMusic();
 
-    // Start countdown timer
     timerRef.current = setInterval(() => {
       setTimeLeft((prev) => {
         if (prev <= 1) {
@@ -184,12 +281,10 @@ export default function PlayPage() {
       });
     }, 1000);
 
-    // Start spawning bubbles
     spawnBubble();
     spawnerRef.current = setInterval(spawnBubble, WORD_INTERVAL);
-  }, []);
+  }, [activeTheme]);
 
-  // Distribute bubbles across lanes to reduce overlap
   const lastLane = useRef(-1);
   const spawnBubble = useCallback(() => {
     if (wordIndex.current >= wordSequence.current.length) return;
@@ -198,23 +293,21 @@ export default function PlayPage() {
     wordIndex.current++;
 
     const id = bubbleId.current++;
-    // Pick a lane that's far from the last one
     let lane;
     let attempts = 0;
     do {
-      lane = Math.random() * 75 + 5; // 5-80%
+      lane = Math.random() * 75 + 5;
       attempts++;
     } while (Math.abs(lane - lastLane.current) < 20 && attempts < 5);
     lastLane.current = lane;
 
-    const swayDuration = 2.5 + Math.random() * 2; // 2.5-4.5s, varied per bubble
+    const swayDuration = 2.5 + Math.random() * 2;
 
     setActiveBubbles((prev) => [
       ...prev,
       { id, word, zone, lane, swayDuration, createdAt: Date.now() },
     ]);
 
-    // Remove bubble after its lifetime
     setTimeout(() => {
       setActiveBubbles((prev) => prev.filter((b) => b.id !== id));
     }, BUBBLE_LIFETIME);
@@ -224,7 +317,8 @@ export default function PlayPage() {
     setGameState("finished");
     clearInterval(timerRef.current);
     clearInterval(spawnerRef.current);
-  }, []);
+    stopMusic();
+  }, [stopMusic]);
 
   // Save results when game finishes
   useEffect(() => {
@@ -242,10 +336,15 @@ export default function PlayPage() {
           })
           .eq("id", sessionId);
       }
-      saveSession(sessionId, collected, zoneCounts);
 
-      // Wait a moment then redirect
-      setTimeout(() => router.push("/results"), 2000);
+      if (!classroomCodeRef.current) {
+        saveSession(sessionId, collected, zoneCounts);
+      }
+
+      const dest = classroomCodeRef.current
+        ? `/t/${classroomCodeRef.current}/results`
+        : "/results";
+      setTimeout(() => router.push(dest), 2000);
     }
     saveResults();
   }, [gameState, sessionId, collected, zoneCounts, router]);
@@ -256,10 +355,11 @@ export default function PlayPage() {
       clearInterval(timerRef.current);
       clearInterval(spawnerRef.current);
       clearTimeout(syncTimer.current);
+      stopMusic();
     };
-  }, []);
+  }, [stopMusic]);
 
-  // ── Debounced sync: push collected words to Supabase shortly after each click ──
+  // Debounced sync
   const syncTimer = useRef(null);
   const collectedRef = useRef([]);
   const zoneCountsRef = useRef({ blue: 0, green: 0, yellow: 0, red: 0 });
@@ -279,11 +379,10 @@ export default function PlayPage() {
         })
         .eq("id", sessionIdRef.current)
         .then(() => {});
-    }, 2000); // 2-second debounce — batches rapid clicks
+    }, 2000);
   }, []);
 
   const collectWord = useCallback((bubble) => {
-    // Mark as collected for animation
     setActiveBubbles((prev) =>
       prev.map((b) =>
         b.id === bubble.id ? { ...b, collected: true } : b
@@ -297,10 +396,8 @@ export default function PlayPage() {
       [bubble.zone]: (prev[bubble.zone] || 0) + 1,
     }));
 
-    // Sync to database (debounced)
     scheduleSyncToDb();
 
-    // Remove after animation
     setTimeout(() => {
       setActiveBubbles((prev) => prev.filter((b) => b.id !== bubble.id));
     }, 400);
@@ -312,15 +409,46 @@ export default function PlayPage() {
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
+  // Resolve zone colors from theme
+  function zoneColor(zone) {
+    return activeTheme.zoneColors?.[zone] || ZONES[zone].color;
+  }
+
   const totalCollected = collected.length;
   const progressPercent = ((GAME_DURATION - timeLeft) / GAME_DURATION) * 100;
 
+  // Bubble shape helpers
+  const bubbleShape = BUBBLE_SHAPES[activeTheme.bubble?.shape] || BUBBLE_SHAPES.circle;
+  const bubbleImageUrl = activeTheme.bubble?.imageUrl;
+  const showBubbleText = activeTheme.bubble?.showText !== false;
+  const bubbleFontSize = activeTheme.bubble?.fontSize || "11px";
+  const bubbleFontDef = BUBBLE_FONT_STYLES.find((f) => f.id === (activeTheme.bubble?.fontStyle || "semibold")) || BUBBLE_FONT_STYLES[1];
+
+  // Background
+  const bgStyle = activeTheme.backgroundImage
+    ? {
+        backgroundImage: `url(${activeTheme.backgroundImage})`,
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+        backgroundAttachment: "fixed",
+      }
+    : {
+        background: `linear-gradient(135deg, ${activeTheme.background.gradient[0]}, ${activeTheme.background.gradient[1]})`,
+      };
+
+  if (!settingsLoaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen flex flex-col overflow-hidden relative">
+    <div className="min-h-screen flex flex-col overflow-hidden relative" style={bgStyle}>
       {/* Header bar */}
       <div className="relative z-20 px-4 py-3 bg-black/30 backdrop-blur-md border-b border-white/10">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
-          {/* Timer */}
           <div className="flex items-center gap-3">
             <div className="text-3xl font-mono font-light tabular-nums">
               {formatTime(timeLeft)}
@@ -336,7 +464,6 @@ export default function PlayPage() {
             )}
           </div>
 
-          {/* Collected count */}
           <div className="flex items-center gap-4">
             <div className="text-center">
               <div className="text-2xl font-semibold">{totalCollected}</div>
@@ -345,21 +472,20 @@ export default function PlayPage() {
               </div>
             </div>
 
-            {/* Mini zone indicators */}
             <div className="hidden sm:flex gap-2">
               {ZONE_KEYS.map((zone) => (
                 <div
                   key={zone}
                   className="flex items-center gap-1.5 px-2 py-1 rounded-lg"
-                  style={{ backgroundColor: ZONES[zone].color + "15" }}
+                  style={{ backgroundColor: zoneColor(zone) + "15" }}
                 >
                   <div
                     className="w-2 h-2 rounded-full"
-                    style={{ backgroundColor: ZONES[zone].color }}
+                    style={{ backgroundColor: zoneColor(zone) }}
                   />
                   <span
                     className="text-sm font-medium tabular-nums"
-                    style={{ color: ZONES[zone].color }}
+                    style={{ color: zoneColor(zone) }}
                   >
                     {zoneCounts[zone]}
                   </span>
@@ -388,8 +514,7 @@ export default function PlayPage() {
                 resonate with how you feel right now.
               </p>
               <p className="text-white/30 text-sm mb-8">
-                5 minutes &middot; 300 words &middot; Pick as many or as few as
-                you like
+                5 minutes &middot; {totalWords} words &middot; Pick as many or as few as you like
               </p>
               <motion.button
                 whileHover={{ scale: 1.05 }}
@@ -411,7 +536,7 @@ export default function PlayPage() {
               animate={{ opacity: 1, scale: 1 }}
               className="text-center"
             >
-              <h2 className="text-4xl font-light mb-4">Time's Up</h2>
+              <h2 className="text-4xl font-light mb-4">Time&apos;s Up</h2>
               <p className="text-white/50 text-lg mb-2">
                 You collected{" "}
                 <span className="text-white font-medium">{totalCollected}</span>{" "}
@@ -423,18 +548,18 @@ export default function PlayPage() {
                     key={zone}
                     className="px-4 py-2 rounded-xl"
                     style={{
-                      backgroundColor: ZONES[zone].color + "20",
-                      border: `1px solid ${ZONES[zone].color}40`,
+                      backgroundColor: zoneColor(zone) + "20",
+                      border: `1px solid ${zoneColor(zone)}40`,
                     }}
                   >
                     <span
                       className="text-lg font-semibold"
-                      style={{ color: ZONES[zone].color }}
+                      style={{ color: zoneColor(zone) }}
                     >
                       {zoneCounts[zone]}
                     </span>
                     <span className="text-white/40 text-sm ml-1.5">
-                      {ZONES[zone].label}
+                      {wordPack.zones?.[zone]?.label || ZONES[zone].label}
                     </span>
                   </div>
                 ))}
@@ -447,35 +572,60 @@ export default function PlayPage() {
         )}
 
         {/* Floating bubbles */}
-        {activeBubbles.map((bubble) => (
-          <div
-            key={bubble.id}
-            className={bubble.collected ? "bubble-collected" : "bubble-fall"}
-            style={{
-              left: `${bubble.lane}%`,
-              "--duration": `${BUBBLE_LIFETIME}ms`,
-              zIndex: 5,
-            }}
-          >
+        {activeBubbles.map((bubble) => {
+          const hasClip = !bubbleImageUrl && bubbleShape.clipPath !== "none";
+          return (
             <div
-              className="bubble-sway"
-              style={{ "--sway-duration": `${bubble.swayDuration}s` }}
+              key={bubble.id}
+              className={bubble.collected ? "bubble-collected" : "bubble-fall"}
+              style={{
+                left: `${bubble.lane}%`,
+                "--duration": `${BUBBLE_LIFETIME}ms`,
+                zIndex: 5,
+              }}
             >
-              <button
-                onClick={() => !bubble.collected && collectWord(bubble)}
-                className="bubble px-5 py-2.5 rounded-full text-sm font-medium whitespace-nowrap select-none active:scale-95"
-                style={{
-                  backgroundColor: ZONES[bubble.zone].color + "25",
-                  color: ZONES[bubble.zone].color,
-                  border: `1.5px solid ${ZONES[bubble.zone].color}50`,
-                  backdropFilter: "blur(8px)",
-                }}
+              <div
+                className="bubble-sway"
+                style={{ "--sway-duration": `${bubble.swayDuration}s` }}
               >
-                {bubble.word}
-              </button>
+                <button
+                  onClick={() => !bubble.collected && collectWord(bubble)}
+                  className="bubble w-[5.5rem] h-[5.5rem] select-none active:scale-95 relative"
+                >
+                  {/* Shape background (clipped) */}
+                  <div
+                    className="absolute inset-0"
+                    style={{
+                      backgroundColor: bubbleImageUrl ? "transparent" : zoneColor(bubble.zone) + "25",
+                      border: bubbleImageUrl ? "none" : `1.5px solid ${zoneColor(bubble.zone)}50`,
+                      backdropFilter: bubbleImageUrl ? "none" : "blur(8px)",
+                      clipPath: hasClip ? bubbleShape.clipPath : undefined,
+                      borderRadius: !bubbleImageUrl ? bubbleShape.borderRadius : undefined,
+                      backgroundImage: bubbleImageUrl ? `url(${bubbleImageUrl})` : undefined,
+                      backgroundSize: "cover",
+                      backgroundPosition: "center",
+                    }}
+                  />
+                  {/* Text overlay (not clipped) */}
+                  {showBubbleText && (
+                    <div
+                      className="absolute inset-0 flex items-center justify-center text-center leading-tight p-2"
+                      style={{
+                        fontSize: bubbleFontSize,
+                        fontWeight: bubbleFontDef.weight,
+                        fontStyle: bubbleFontDef.style,
+                        textTransform: bubbleFontDef.transform || "none",
+                        color: zoneColor(bubble.zone),
+                      }}
+                    >
+                      {bubble.word}
+                    </div>
+                  )}
+                </button>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

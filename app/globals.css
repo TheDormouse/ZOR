@@ -17,7 +17,7 @@ body {
 /* Vertical fall — applied to the OUTER wrapper div */
 @keyframes float-down {
   0% {
-    top: -60px;
+    top: -100px;
     opacity: 0;
   }
   5% {
@@ -27,7 +27,7 @@ body {
     opacity: 1;
   }
   100% {
-    top: calc(100% - 40px);
+    top: calc(100% - 60px);
     opacity: 0;
   }
 }
@@ -74,6 +74,15 @@ body {
 .bubble:hover {
   box-shadow: 0 0 28px rgba(255, 255, 255, 0.35);
   filter: brightness(1.2);
+}
+
+/* Bubble shapes via clip-path (used when no custom image is set) */
+.bubble-shape-star {
+  clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
+}
+
+.bubble-shape-hexagon {
+  clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
 }
 
 /* Scrollbar styling */

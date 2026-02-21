@@ -1,4 +1,5 @@
 import "./globals.css";
+import AuthProvider from "@/components/AuthProvider";
 
 export const metadata = {
   title: "Zones of Regulation",
@@ -14,7 +15,9 @@ export default function RootLayout({ children }) {
           rel="stylesheet"
         />
       </head>
-      <body className="antialiased">{children}</body>
+      <body className="antialiased">
+        <AuthProvider>{children}</AuthProvider>
+      </body>
     </html>
   );
 }

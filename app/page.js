@@ -5,9 +5,11 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { ZONES, ZONE_KEYS } from "@/lib/zones";
 import { getTodaySession, hasPlayedToday } from "@/lib/storage";
+import { useAuth } from "@/components/AuthProvider";
 
 export default function Home() {
   const router = useRouter();
+  const { user } = useAuth();
   const [played, setPlayed] = useState(false);
   const [todaySession, setTodaySession] = useState(null);
   const [mounted, setMounted] = useState(false);
@@ -31,6 +33,29 @@ export default function Home() {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6 relative overflow-hidden">
+      {/* Auth nav */}
+      <div className="absolute top-4 right-4 z-20">
+        {user ? (
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => router.push("/dashboard")}
+            className="px-5 py-2 rounded-xl text-sm font-medium border border-white/20 text-white/70 hover:bg-white/10 transition-all"
+          >
+            Dashboard
+          </motion.button>
+        ) : (
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => router.push("/auth")}
+            className="px-5 py-2 rounded-xl text-sm font-medium border border-white/20 text-white/70 hover:bg-white/10 transition-all"
+          >
+            Sign In
+          </motion.button>
+        )}
+      </div>
+
       {/* Ambient floating orbs */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         {ZONE_KEYS.map((zone, i) => (
