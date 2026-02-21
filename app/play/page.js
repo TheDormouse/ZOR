@@ -10,7 +10,7 @@ import { MUSIC_PRESETS } from "@/lib/themes/presets";
 import { hasPlayedToday, saveSession } from "@/lib/storage";
 import { supabase } from "@/lib/supabase";
 
-const GAME_DURATION = 300;
+const DEFAULT_GAME_DURATION = 300;
 const WORD_INTERVAL = 1000;
 const BUBBLE_LIFETIME = 8000;
 const INACTIVITY_TIMEOUT = 60_000;
@@ -52,7 +52,7 @@ function PlayGame() {
   const classroomCodeRef = useRef(classroomCode);
 
   const [gameState, setGameState] = useState("ready");
-  const [timeLeft, setTimeLeft] = useState(GAME_DURATION);
+  const [timeLeft, setTimeLeft] = useState(DEFAULT_GAME_DURATION);
   const [activeBubbles, setActiveBubbles] = useState([]);
   const [collected, setCollected] = useState([]);
   const [zoneCounts, setZoneCounts] = useState({ blue: 0, green: 0, yellow: 0, red: 0 });
@@ -148,11 +148,12 @@ function PlayGame() {
     wordSequence.current = generateWordSequence(wordPack);
   }, [settingsLoaded, wordPack]);
 
-  // Compute game duration based on word pack size
+  const isInfinite = activeTheme.game?.infinite === true;
+  const configuredDuration = activeTheme.game?.duration || DEFAULT_GAME_DURATION;
   const totalWords = wordPack.zones
     ? ZONE_KEYS.reduce((sum, z) => sum + (wordPack.zones[z]?.words?.length || 0), 0)
     : 300;
-  const gameDuration = Math.max(totalWords, GAME_DURATION);
+  const gameDuration = isInfinite ? Infinity : Math.max(totalWords, configuredDuration);
 
   // Cancellation: beforeunload
   useEffect(() => {
@@ -271,23 +272,35 @@ function PlayGame() {
     wordIndex.current = 0;
     startMusic();
 
-    timerRef.current = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          endGame();
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    if (isInfinite) {
+      setTimeLeft(0);
+      timerRef.current = setInterval(() => {
+        setTimeLeft((prev) => prev + 1);
+      }, 1000);
+    } else {
+      setTimeLeft(gameDuration);
+      timerRef.current = setInterval(() => {
+        setTimeLeft((prev) => {
+          if (prev <= 1) {
+            endGame();
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
 
     spawnBubble();
     spawnerRef.current = setInterval(spawnBubble, WORD_INTERVAL);
-  }, [activeTheme]);
+  }, [activeTheme, isInfinite, gameDuration]);
 
   const lastLane = useRef(-1);
   const spawnBubble = useCallback(() => {
-    if (wordIndex.current >= wordSequence.current.length) return;
+    if (wordSequence.current.length === 0) return;
+    if (wordIndex.current >= wordSequence.current.length) {
+      if (!isInfinite) return;
+      wordIndex.current = 0;
+    }
 
     const { word, zone } = wordSequence.current[wordIndex.current];
     wordIndex.current++;
@@ -311,7 +324,7 @@ function PlayGame() {
     setTimeout(() => {
       setActiveBubbles((prev) => prev.filter((b) => b.id !== id));
     }, BUBBLE_LIFETIME);
-  }, []);
+  }, [isInfinite]);
 
   const endGame = useCallback(() => {
     setGameState("finished");
@@ -415,7 +428,7 @@ function PlayGame() {
   }
 
   const totalCollected = collected.length;
-  const progressPercent = ((GAME_DURATION - timeLeft) / GAME_DURATION) * 100;
+  const progressPercent = isInfinite ? 0 : ((gameDuration - timeLeft) / gameDuration) * 100;
 
   // Bubble shape helpers
   const bubbleShape = BUBBLE_SHAPES[activeTheme.bubble?.shape] || BUBBLE_SHAPES.circle;
@@ -453,7 +466,7 @@ function PlayGame() {
             <div className="text-3xl font-mono font-light tabular-nums">
               {formatTime(timeLeft)}
             </div>
-            {gameState === "playing" && (
+            {gameState === "playing" && !isInfinite && (
               <div className="h-1.5 w-32 bg-white/10 rounded-full overflow-hidden">
                 <motion.div
                   className="h-full bg-white/50 rounded-full"
@@ -462,9 +475,20 @@ function PlayGame() {
                 />
               </div>
             )}
+            {gameState === "playing" && isInfinite && (
+              <span className="text-xs text-white/30 uppercase tracking-wider">elapsed</span>
+            )}
           </div>
 
           <div className="flex items-center gap-4">
+            {gameState === "playing" && (
+              <button
+                onClick={endGame}
+                className="px-4 py-1.5 rounded-xl text-sm font-medium bg-white/10 border border-white/20 text-white/70 hover:bg-white/15 hover:text-white transition-all"
+              >
+                Done
+              </button>
+            )}
             <div className="text-center">
               <div className="text-2xl font-semibold">{totalCollected}</div>
               <div className="text-[10px] text-white/40 uppercase tracking-wider">
@@ -514,7 +538,8 @@ function PlayGame() {
                 resonate with how you feel right now.
               </p>
               <p className="text-white/30 text-sm mb-8">
-                5 minutes &middot; {totalWords} words &middot; Pick as many or as few as you like
+                {isInfinite ? "No time limit" : `${Math.floor(gameDuration / 60)} minute${gameDuration >= 120 ? "s" : ""}`}
+                {" "}&middot; {totalWords} words &middot; Pick as many or as few as you like
               </p>
               <motion.button
                 whileHover={{ scale: 1.05 }}
@@ -536,7 +561,7 @@ function PlayGame() {
               animate={{ opacity: 1, scale: 1 }}
               className="text-center"
             >
-              <h2 className="text-4xl font-light mb-4">Time&apos;s Up</h2>
+              <h2 className="text-4xl font-light mb-4">{isInfinite ? "All Done" : "Time\u2019s Up"}</h2>
               <p className="text-white/50 text-lg mb-2">
                 You collected{" "}
                 <span className="text-white font-medium">{totalCollected}</span>{" "}

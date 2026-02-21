@@ -6,13 +6,13 @@ import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/components/AuthProvider";
 import { ZONES, ZONE_KEYS } from "@/lib/zones";
-import { mergeTheme, BUBBLE_SHAPES, BUBBLE_SHAPE_KEYS, BUBBLE_FONT_SIZES, BUBBLE_FONT_STYLES, THEME_PRESETS } from "@/lib/themes";
+import { mergeTheme, BUBBLE_SHAPES, BUBBLE_SHAPE_KEYS, BUBBLE_FONT_SIZES, BUBBLE_FONT_STYLES, GAME_DURATION_OPTIONS, THEME_PRESETS } from "@/lib/themes";
 import { MUSIC_PRESETS } from "@/lib/themes/presets";
 import { PRESET_WORD_PACKS } from "@/lib/word-packs";
 import WordPackBrowser from "@/components/WordPackBrowser";
 import WordPackEditor from "@/components/WordPackEditor";
 
-const TABS = ["Word Packs", "Visuals", "Music"];
+const TABS = ["Word Packs", "Visuals", "Music", "Game"];
 
 export default function CustomizePage({ params }) {
   const { classroomId } = use(params);
@@ -80,6 +80,12 @@ export default function CustomizePage({ params }) {
 
   function updateBubble(partial) {
     const updated = { ...theme, bubble: { ...(theme.bubble || {}), ...partial } };
+    setTheme(updated);
+    saveSettings(updated, wordPackId);
+  }
+
+  function updateGame(partial) {
+    const updated = { ...theme, game: { ...(theme.game || {}), ...partial } };
     setTheme(updated);
     saveSettings(updated, wordPackId);
   }
@@ -641,6 +647,101 @@ export default function CustomizePage({ params }) {
                 <p className="text-xs text-white/25 mt-2">
                   Supports MP3, WAV, OGG. Max 10MB.
                 </p>
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 3 && (
+            <motion.div
+              key="game"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-8"
+            >
+              {/* Infinite Mode */}
+              <div>
+                <h3 className="text-sm font-medium text-white/50 uppercase tracking-wider mb-3">
+                  Game Mode
+                </h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => updateGame({ infinite: false })}
+                    className={`rounded-xl p-5 border transition-all text-left ${
+                      !merged.game.infinite
+                        ? "border-white/30 bg-white/10"
+                        : "border-white/10 bg-white/5 hover:bg-white/[0.07]"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 mb-2">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-white/60">
+                        <circle cx="12" cy="12" r="10" />
+                        <polyline points="12 6 12 12 16 14" />
+                      </svg>
+                      <span className="font-medium">Timed</span>
+                    </div>
+                    <p className="text-xs text-white/40">
+                      Game ends when the timer runs out.
+                    </p>
+                  </button>
+                  <button
+                    onClick={() => updateGame({ infinite: true })}
+                    className={`rounded-xl p-5 border transition-all text-left ${
+                      merged.game.infinite
+                        ? "border-white/30 bg-white/10"
+                        : "border-white/10 bg-white/5 hover:bg-white/[0.07]"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 mb-2">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-white/60">
+                        <path d="M18.178 8c5.096 0 5.096 8 0 8-5.095 0-5.095-8-10.19-8-5.096 0-5.096 8 0 8 5.095 0 5.095-8 10.19-8z" />
+                      </svg>
+                      <span className="font-medium">Infinite</span>
+                    </div>
+                    <p className="text-xs text-white/40">
+                      Game runs until the player ends it. Words loop continuously.
+                    </p>
+                  </button>
+                </div>
+              </div>
+
+              {/* Duration (only when timed) */}
+              {!merged.game.infinite && (
+                <div>
+                  <h3 className="text-sm font-medium text-white/50 uppercase tracking-wider mb-3">
+                    Duration
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    {GAME_DURATION_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.id}
+                        onClick={() => updateGame({ duration: opt.id })}
+                        className={`px-5 py-2.5 rounded-xl border text-sm transition-all ${
+                          (merged.game.duration || 300) === opt.id
+                            ? "border-white/30 bg-white/10 text-white"
+                            : "border-white/10 bg-white/5 text-white/40 hover:bg-white/[0.07]"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Summary */}
+              <div className="rounded-2xl p-6 bg-white/5 border border-white/10 backdrop-blur-sm">
+                <div className="flex items-center gap-3 text-white/60">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M12 16v-4M12 8h.01" />
+                  </svg>
+                  <p className="text-sm">
+                    {merged.game.infinite
+                      ? "Players can end the game at any time by tapping the \"Done\" button. Words will loop back around once all have been shown."
+                      : `The game will last ${Math.floor((merged.game.duration || 300) / 60)} minute${(merged.game.duration || 300) >= 120 ? "s" : ""}. Players can also end early by tapping the "Done" button.`}
+                  </p>
+                </div>
               </div>
             </motion.div>
           )}
