@@ -11,8 +11,8 @@ import { hasPlayedToday, saveSession } from "@/lib/storage";
 import { supabase } from "@/lib/supabase";
 
 const DEFAULT_GAME_DURATION = 300;
-const WORD_INTERVAL = 1000;
-const BUBBLE_LIFETIME = 8000;
+const WORD_INTERVAL = 2000;
+const BUBBLE_LIFETIME = 12000;
 const INACTIVITY_TIMEOUT = 60_000;
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -149,11 +149,10 @@ function PlayGame() {
   }, [settingsLoaded, wordPack]);
 
   const isInfinite = activeTheme.game?.infinite === true;
-  const configuredDuration = activeTheme.game?.duration || DEFAULT_GAME_DURATION;
+  const gameDuration = activeTheme.game?.duration || DEFAULT_GAME_DURATION;
   const totalWords = wordPack.zones
     ? ZONE_KEYS.reduce((sum, z) => sum + (wordPack.zones[z]?.words?.length || 0), 0)
     : 300;
-  const gameDuration = isInfinite ? Infinity : Math.max(totalWords, configuredDuration);
 
   // Cancellation: beforeunload
   useEffect(() => {
